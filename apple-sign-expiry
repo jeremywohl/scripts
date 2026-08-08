@@ -1,0 +1,45 @@
+#!/bin/bash
+# Lists Apple provisioning-profile expiry dates for every app signed on this Mac,
+# newest profile per app id. A device install stops launching when the profile it
+# was installed with expires, so the newest matching profile approximates the
+# deadline for the most recent install. Exits 1 if anything expires within 30 days.
+set -euo pipefail
+
+WARN_DAYS=${WARN_DAYS:-30}
+DIRS=(
+  "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+  "$HOME/Library/MobileDevice/Provisioning Profiles"
+)
+
+now=$(date -u +%s)
+status=0
+
+rows=$(
+  for dir in "${DIRS[@]}"; do
+    [ -d "$dir" ] || continue
+    for f in "$dir"/*.mobileprovision "$dir"/*.provisionprofile; do
+      [ -e "$f" ] || continue
+      plist=$(security cms -D -i "$f" 2>/dev/null) || continue
+      exp=$(plutil -extract ExpirationDate raw -o - - <<<"$plist" 2>/dev/null) || continue
+      name=$(plutil -extract Name raw -o - - <<<"$plist" 2>/dev/null) || name="?"
+      appid=$(plutil -extract 'Entitlements.application-identifier' raw -o - - <<<"$plist" 2>/dev/null) \
+        || appid=$(plutil -extract 'Entitlements.com\.apple\.application-identifier' raw -o - - <<<"$plist" 2>/dev/null) \
+        || appid="?"
+      echo "$exp|$appid|$name"
+    done
+  done | sort -r | awk -F'|' '!seen[$2]++' | sort
+)
+
+printf "%-12s %6s  %-45s %s\n" "EXPIRES" "DAYS" "APP ID" "PROFILE"
+while IFS='|' read -r exp appid name; do
+  [ -n "$exp" ] || continue
+  exp_s=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$exp" +%s)
+  days=$(( (exp_s - now) / 86400 ))
+  flag=""
+  if [ "$days" -lt 0 ]; then flag="  << EXPIRED"; status=1
+  elif [ "$days" -le "$WARN_DAYS" ]; then flag="  << SOON"; status=1
+  fi
+  printf "%-12s %6s  %-45s %s%s\n" "${exp%%T*}" "$days" "$appid" "$name" "$flag"
+done <<<"$rows"
+
+exit $status

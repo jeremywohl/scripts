@@ -1,0 +1,122 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#
+# brighttrack - watch for brightness changes on any monitor and mirror them to the rest.
+#
+# Talks to the private DisplayServices framework, the same API macOS itself uses
+# for Apple displays and LG UltraFine panels (no DDC/CI needed). Polls, since the
+# notification API requires hosting a CFRunLoop.
+#
+# Usage:
+#   brighttrack             run the watcher
+#   brighttrack --list      show displays and current brightness, then exit
+#   brighttrack -v          run with per-sync logging
+
+require "fiddle"
+require "optparse"
+
+module Displays
+  CG = Fiddle.dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+  DS = Fiddle.dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices")
+
+  UINT = -Fiddle::TYPE_INT  # unsigned 32-bit (CGDirectDisplayID)
+
+  ONLINE_LIST  = Fiddle::Function.new(CG["CGGetOnlineDisplayList"], [UINT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT)
+  IS_BUILTIN   = Fiddle::Function.new(CG["CGDisplayIsBuiltin"], [UINT], Fiddle::TYPE_INT)
+  CAN_CHANGE   = Fiddle::Function.new(DS["DisplayServicesCanChangeBrightness"], [UINT], Fiddle::TYPE_CHAR)
+  GET_BRIGHT   = Fiddle::Function.new(DS["DisplayServicesGetBrightness"], [UINT, Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT)
+  SET_BRIGHT   = Fiddle::Function.new(DS["DisplayServicesSetBrightness"], [UINT, Fiddle::TYPE_FLOAT], Fiddle::TYPE_INT)
+
+  MAX_DISPLAYS = 16
+
+  def self.online_ids
+    ids   = Fiddle::Pointer.malloc(4 * MAX_DISPLAYS, Fiddle::RUBY_FREE)
+    count = Fiddle::Pointer.malloc(4, Fiddle::RUBY_FREE)
+    return [] unless ONLINE_LIST.call(MAX_DISPLAYS, ids, count).zero?
+    n = count[0, 4].unpack1("L")
+    ids[0, 4 * n].unpack("L*")
+  end
+
+  def self.controllable_ids
+    online_ids.select { |id| CAN_CHANGE.call(id) != 0 }
+  end
+
+  def self.builtin?(id)
+    IS_BUILTIN.call(id) != 0
+  end
+
+  def self.brightness(id)
+    buf = Fiddle::Pointer.malloc(4, Fiddle::RUBY_FREE)
+    return nil unless GET_BRIGHT.call(id, buf).zero?
+    buf[0, 4].unpack1("f")
+  end
+
+  def self.set_brightness(id, value)
+    SET_BRIGHT.call(id, value.clamp(0.0, 1.0)).zero?
+  end
+end
+
+options = { interval: 0.5, epsilon: 0.01, rescan: 10.0, verbose: false, list: false }
+OptionParser.new do |op|
+  op.banner = "Usage: brighttrack [options]"
+  op.on("--list", "List displays and brightness, then exit") { options[:list] = true }
+  op.on("--interval SECS", Float, "Poll interval (default #{options[:interval]})") { |v| options[:interval] = v }
+  op.on("--epsilon FRAC", Float, "Change threshold, 0-1 scale (default #{options[:epsilon]})") { |v| options[:epsilon] = v }
+  op.on("-v", "--verbose", "Log each detected change and sync") { options[:verbose] = true }
+end.parse!
+
+if options[:list]
+  ids = Displays.online_ids
+  abort "no online displays found" if ids.empty?
+  ids.each do |id|
+    can = Displays::CAN_CHANGE.call(id) != 0
+    parts = ["display #{id}"]
+    parts << "builtin" if Displays.builtin?(id)
+    parts << (can ? format("brightness %.3f", Displays.brightness(id) || Float::NAN) : "brightness not controllable")
+    puts parts.join("  ")
+  end
+  exit
+end
+
+log = ->(msg) { puts "#{Time.now.strftime('%H:%M:%S')}  #{msg}" if options[:verbose] }
+
+state = {}  # id => brightness at last sync/rescan
+last_rescan = Time.at(0)
+ids = []
+
+Signal.trap("INT")  { exit }
+Signal.trap("TERM") { exit }
+
+loop do
+  if Time.now - last_rescan >= options[:rescan]
+    fresh = Displays.controllable_ids
+    (fresh - ids).each do |id|
+      state[id] = Displays.brightness(id)
+      log.call("tracking display #{id} at #{format('%.3f', state[id] || Float::NAN)}")
+    end
+    (ids - fresh).each do |id|
+      state.delete(id)
+      log.call("display #{id} went offline")
+    end
+    ids = fresh
+    last_rescan = Time.now
+  end
+
+  readings = ids.to_h { |id| [id, Displays.brightness(id)] }
+  changed = ids.select do |id|
+    readings[id] && state[id] && (readings[id] - state[id]).abs > options[:epsilon]
+  end
+
+  unless changed.empty?
+    leader = changed.max_by { |id| (readings[id] - state[id]).abs }
+    target = readings[leader]
+    log.call("display #{leader} changed #{format('%.3f -> %.3f', state[leader], target)}; syncing others")
+    (ids - [leader]).each do |id|
+      Displays.set_brightness(id, target) or log.call("  failed to set display #{id}")
+    end
+    # re-read so quantization by the display doesn't register as a new change
+    ids.each { |id| state[id] = Displays.brightness(id) || state[id] }
+  end
+
+  sleep options[:interval]
+end

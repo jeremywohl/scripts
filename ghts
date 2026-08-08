@@ -1,0 +1,8 @@
+#!/bin/zsh
+set -euo pipefail
+
+entry="github-gh-anchor-pat"
+
+token="$(touchstore get "$entry")"
+
+exec env GH_TOKEN="$token" gh "$@"

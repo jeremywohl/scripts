@@ -1,0 +1,35 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+line=$(claude -p '/usage' | grep Fable)
+
+if [[ ! $line =~ '([0-9]+)% used' ]]; then
+  echo "Couldn't parse usage from: $line" >&2
+  exit 1
+fi
+pct=$match[1]
+
+resets=""
+if [[ $line =~ 'resets ([^(]*[^( ])' ]]; then
+  resets=$match[1]
+fi
+
+# Bar: 20 cells, colored by how close we are to the limit.
+width=20
+filled=$(( pct * width / 100 ))
+(( filled > width )) && filled=$width
+
+if (( pct >= 85 )); then
+  color=$'\e[31m'  # red
+elif (( pct >= 60 )); then
+  color=$'\e[33m'  # yellow
+else
+  color=$'\e[32m'  # green
+fi
+reset_color=$'\e[0m'
+dim=$'\e[2m'
+
+bar="${color}${(l:$filled::█:):-}${reset_color}${dim}${(l:$(( width - filled ))::░:):-}${reset_color}"
+
+print -- "Fable  $bar  ${pct}%  ${dim}· resets ${resets}${reset_color}"
