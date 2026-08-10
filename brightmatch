@@ -1,16 +1,16 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 #
-# brighttrack - watch for brightness changes on any monitor and mirror them to the rest.
+# brightmatch - watch for brightness changes on any monitor and mirror them to the rest.
 #
 # Talks to the private DisplayServices framework, the same API macOS itself uses
 # for Apple displays and LG UltraFine panels (no DDC/CI needed). Polls, since the
 # notification API requires hosting a CFRunLoop.
 #
 # Usage:
-#   brighttrack             run the watcher
-#   brighttrack --list      show displays and current brightness, then exit
-#   brighttrack -v          run with per-sync logging
+#   brightmatch             run the watcher
+#   brightmatch --list      show displays and current brightness, then exit
+#   brightmatch -v          run with per-sync logging
 
 require "fiddle"
 require "optparse"
@@ -58,7 +58,7 @@ end
 
 options = { interval: 0.5, epsilon: 0.01, rescan: 10.0, verbose: false, list: false }
 OptionParser.new do |op|
-  op.banner = "Usage: brighttrack [options]"
+  op.banner = "Usage: brightmatch [options]"
   op.on("--list", "List displays and brightness, then exit") { options[:list] = true }
   op.on("--interval SECS", Float, "Poll interval (default #{options[:interval]})") { |v| options[:interval] = v }
   op.on("--epsilon FRAC", Float, "Change threshold, 0-1 scale (default #{options[:epsilon]})") { |v| options[:epsilon] = v }
