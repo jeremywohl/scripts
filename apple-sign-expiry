@@ -2,17 +2,39 @@
 # Lists Apple provisioning-profile expiry dates for every app signed on this Mac,
 # newest profile per app id. A device install stops launching when the profile it
 # was installed with expires, so the newest matching profile approximates the
-# deadline for the most recent install. Exits 1 if anything expires within 30 days.
+# deadline for the most recent install. Exits 1 if anything expires within 45 days.
+#
+#   apple-sign-expiry [--notify CMD [ARG...]]
+#
+# With --notify (meant for a daily launch agent), runs CMD ARG... with the message
+# appended as the final argument whenever an app crosses a new threshold: 45, 30,
+# 21, 14, 10, 7, 5, 3, 2, 1, 0 days out, then weekly until 60 days past expiry.
+# Thresholds already notified are kept in the state file, so a missed day still
+# fires on the next run and reruns don't repeat. Exits 0 unless CMD fails.
 set -euo pipefail
 
-WARN_DAYS=${WARN_DAYS:-30}
+WARN_DAYS=${WARN_DAYS:-45}
+THRESHOLDS="45 30 21 14 10 7 5 3 2 1 0"
+EXPIRED_DAYS=60
+STATE=${STATE:-$HOME/.config/apple-sign-expiry/state}
 DIRS=(
   "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
   "$HOME/Library/MobileDevice/Provisioning Profiles"
 )
 
+notify=()
+if [ "${1:-}" = "--notify" ] && [ $# -gt 1 ]; then
+  shift
+  notify=("$@")
+elif [ $# -gt 0 ]; then
+  echo "usage: ${0##*/} [--notify CMD [ARG...]]" >&2
+  exit 2
+fi
+
 now=$(date -u +%s)
 status=0
+message=""
+newstate=""
 
 rows=$(
   for dir in "${DIRS[@]}"; do
@@ -40,6 +62,32 @@ while IFS='|' read -r exp appid name; do
   elif [ "$days" -le "$WARN_DAYS" ]; then flag="  << SOON"; status=1
   fi
   printf "%-12s %6s  %-45s %s%s\n" "${exp%%T*}" "$days" "$appid" "$name" "$flag"
+
+  # Current threshold: the nearest one at or above $days, or the week since expiry.
+  bucket=""
+  if [ "$days" -lt 0 ]; then
+    [ $(( -days )) -gt "$EXPIRED_DAYS" ] || bucket="expired-w$(( -days / 7 ))"
+  else
+    for t in $THRESHOLDS; do
+      [ "$days" -gt "$t" ] || bucket=$t
+    done
+  fi
+  [ -n "$bucket" ] || continue
+
+  line="$appid|$exp|$bucket"
+  newstate+="$line"$'\n'
+  if ! grep -Fxq "$line" "$STATE" 2>/dev/null; then
+    if [ "$days" -lt 0 ]; then when="expired $(( -days ))d ago"
+    else when="expires in ${days}d"
+    fi
+    message+="${appid#*.} $when (${exp%%T*})"$'\n'
+  fi
 done <<<"$rows"
 
-exit $status
+[ ${#notify[@]} -gt 0 ] || exit $status
+
+if [ -n "$message" ]; then
+  "${notify[@]}" "${message%$'\n'}"
+fi
+mkdir -p "${STATE%/*}"
+printf "%s" "$newstate" >"$STATE"

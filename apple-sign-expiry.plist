@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Sample launch agent: runs apple-sign-expiry daily and notifies via terminal-notifier.
+     Set SCRIPTS below, copy to ~/Library/LaunchAgents/local.apple-sign-expiry.plist, then:
+     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.apple-sign-expiry.plist
+     It runs once at load -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.apple-sign-expiry</string>
+	<key>ProgramArguments</key>
+	<array>
+		<!-- launchd doesn't expand ~ or $HOME itself, so go through sh -->
+		<string>/bin/sh</string>
+		<string>-c</string>
+		<string>SCRIPTS="/path/to/scripts"
+PATH="$HOME/.brew/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+exec &gt;&gt;"$HOME/Library/Logs/apple-sign-expiry.log" 2&gt;&amp;1
+set -- terminal-notifier -title "Apple signing expiry" -message
+[ -x "$SCRIPTS/apple-sign-expiry" ] || { "$@" "local.apple-sign-expiry: set SCRIPTS in the plist ($SCRIPTS not found)"; exit 78; }
+exec "$SCRIPTS/apple-sign-expiry" --notify "$@"</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>9</integer>
+		<key>Minute</key>
+		<integer>5</integer>
+	</dict>
+</dict>
+</plist>
